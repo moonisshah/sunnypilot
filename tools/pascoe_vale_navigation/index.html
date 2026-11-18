@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pascoe Vale route planner</title>
+<style>
+body { margin: 3rem auto; padding: 0 1rem; max-width: 34rem; font: 18px/1.5 system-ui; color: #153d35; }
+input,button { font: inherit; padding: .5rem; }
+input { width: 95%; margin-bottom: 1rem; }
+button { cursor: pointer; }
+</style>
+<h1>Pascoe Vale route planner</h1>
+<form id="planner">
+<label for="start">Starting address</label><input id="start" list="addresses" required>
+<label for="finish">Destination address</label><input id="finish" list="addresses" required>
+<datalist id="addresses"></datalist>
+<button>Calculate route</button>
+</form>
+<p id="status" role="status"></p><ol id="turns"></ol>
+<button id="save" disabled>Save route for comma four</button>
+<p><small>Street map and addresses © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>, ODbL. Routes cover the included Pascoe Vale street network.</small></p>
+<script src="map.js"></script><script src="route.js"></script>
+<script>
+const form = document.getElementById('planner');
+const save = document.getElementById('save');
+const statusLine = document.getElementById('status');
+const turnList = document.getElementById('turns');
+const choices = document.getElementById('addresses');
+const normalize = text => text.trim().toLowerCase().replace(/\s+/g, ' ');
+const names = new Map(Object.keys(addresses).map(name => [normalize(name), name]));
+let result;
+function reset() {
+  result = null;
+  save.disabled = true;
+  turnList.replaceChildren();
+  statusLine.textContent = '';
+}
+form.oninput = event => {
+  reset();
+  choices.replaceChildren();
+  const query = normalize(event.target.value);
+  for (const [key, name] of names) {
+    if (key.includes(query)) choices.append(new Option(name, name));
+    if (choices.children.length >= 20) break;
+  }
+};
+form.onsubmit = event => {
+  event.preventDefault();
+  reset();
+  const selected = ['start', 'finish'].map(id => addresses[names.get(normalize(document.getElementById(id).value))]);
+  if (selected.includes(undefined)) {statusLine.textContent = 'Select a listed street address for both ends.'; return;}
+  try {
+    const plan = calculate(...selected);
+    if (plan.distance < 1) throw Error('Choose two different locations.');
+    result = {format:'local-route-2', origin:data.origin, points:plan.route, turns:plan.turns};
+    for (const [metres, cue] of plan.turns) {
+      const item = document.createElement('li');
+      item.textContent = Math.round(metres) + ' m from start · ' + cue;
+      turnList.append(item);
+    }
+    statusLine.textContent = (plan.distance / 1000).toFixed(2) + ' km';
+    save.disabled = false;
+  } catch (error) {statusLine.textContent = error.message;}
+};
+save.onclick = () => {
+  if (!result) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(result)], {type:'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'santa-fe-route.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+</script>
+</html>

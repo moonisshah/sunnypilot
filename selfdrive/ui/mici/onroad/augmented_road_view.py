@@ -1,9 +1,11 @@
+import time
 import numpy as np
 import pyray as rl
 from cereal import car, log
 from msgq.visionipc import VisionStreamType
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
+from openpilot.selfdrive.ui.mici.onroad.route_cue import RouteDisplay
 from openpilot.selfdrive.ui.mici.onroad.alert_renderer import AlertRenderer
 from openpilot.selfdrive.ui.mici.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
@@ -152,6 +154,7 @@ class AugmentedRoadView(CameraView):
 
     self._model_renderer = ModelRenderer()
     self._hud_renderer = HudRenderer()
+    self._route_display = RouteDisplay()
     self._alert_renderer = AlertRenderer()
     self._driver_state_renderer = DriverStateRenderer()
     self._confidence_ball = ConfidenceBall()
@@ -187,6 +190,8 @@ class AugmentedRoadView(CameraView):
     if not ui_state.started:
       rl.draw_rectangle_rec(self.rect, rl.BLACK)
       self._offroad_label.render(self._rect)
+      if not ui_state.ignition and ui_state.panda_type != log.PandaState.PandaType.unknown:
+        self._draw_route_text(self._rect, self._route_display.parked_preview(), parked=True)
       return
 
     self._switch_stream_if_needed(ui_state.sm)
@@ -232,6 +237,10 @@ class AugmentedRoadView(CameraView):
     self._hud_renderer.set_can_draw_top_icons(alert_to_render is None)
     self._hud_renderer.set_wheel_critical_icon(alert_to_render is not None and not not_animating_out and
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
+    if alert_to_render is None:
+      cue = self._route_display.current_text(ui_state.sm, ui_state.started_frame, time.monotonic())
+      if cue:
+        self._draw_route_text(self._content_rect, cue)
     self._alert_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
 
@@ -246,6 +255,24 @@ class AugmentedRoadView(CameraView):
     self._confidence_ball.render(self.rect)
 
     self._bookmark_icon.render(self.rect)
+
+  def _draw_route_text(self, rect, text, parked=False):
+    # Leave the top-left monitoring and cruise icons clear. Alerts and the HUD draw last.
+    x = int(rect.x + (24 if parked else 178))
+    y = int(rect.y + (rect.height - 55 if parked else 16))
+    available = int(rect.x + rect.width - x - 22)
+    if available < 120:
+      return
+    font = gui_app.font(FontWeight.BOLD)
+    size = 24
+    def width(value):
+      return rl.measure_text_ex(font, value, size, 0).x
+    if width(text) > available - 16:
+      while text and width(text + '…') > available - 16:
+        text = text[:-1]
+      text += '…'
+    rl.draw_rectangle(x, y, int(width(text)) + 16, 34, rl.Color(10, 22, 20, 235))
+    rl.draw_text_ex(font, text, rl.Vector2(x + 8, y + 4), size, 0, rl.WHITE)
 
   def _switch_stream_if_needed(self, sm):
     if sm['selfdriveState'].experimentalMode and WIDE_CAM in self.available_streams:
