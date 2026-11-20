@@ -2,7 +2,7 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jacana route planner</title>
+<title>{{area}} route planner</title>
 <style>
 body { margin: 3rem auto; padding: 0 1rem; max-width: 34rem; font: 18px/1.5 system-ui; color: #153d35; }
 input,button { font: inherit; padding: .5rem; }
@@ -10,7 +10,8 @@ input { width: 95%; margin-bottom: 1rem; }
 button { cursor: pointer; }
 canvas { width: 100%; height: auto; background: #eff1ea; border-radius: 8px; }
 </style>
-<h1>Jacana route planner</h1>
+<h1>{{area}} route planner</h1>
+<nav aria-label="Map area"><a href="./">Jacana map</a> · <a href="?area=pascoe">Pascoe Vale map</a></nav>
 <form id="planner">
 <label for="start">Starting address (optional)</label><input id="start" placeholder="Use comma GPS">
 <label for="finish">Destination address</label><input id="finish">
@@ -23,8 +24,8 @@ canvas { width: 100%; height: auto; background: #eff1ea; border-radius: 8px; }
 <canvas id="map" width="600" height="480" aria-label="Jacana local street map"></canvas>
 <p id="status" role="status"></p><ol id="turns"></ol>
 <button id="save" disabled>Send to Comma</button>
-<p><small>Street map and addresses © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>, ODbL. Routes cover the included Jacana street network.</small></p>
-<script src="map.js"></script><script src="route.js"></script>
+<p><small>Street map and addresses © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>, ODbL. Routes cover the included {{area}} street network.</small></p>
+<script src="{{map_file}}"></script><script src="route.js"></script>
 <script>
 const form = document.getElementById('planner');
 const save = document.getElementById('save');
@@ -40,8 +41,8 @@ let activeField;
 const matches = document.getElementById("matches");
 const canvas = document.getElementById('map');
 const ctx = canvas.getContext('2d');
-const scale = Math.min(576 / bounds[1][0], 456 / bounds[1][1]);
-const pixel = ([x,y]) => [12 + x*scale, 468 - y*scale];
+const scale = Math.min(576 / (bounds[1][0]-bounds[0][0]), 456 / (bounds[1][1]-bounds[0][1]));
+const pixel = ([x,y]) => [12 + (x-bounds[0][0])*scale, 468 - (y-bounds[0][1])*scale];
 const pins = {};
 let selecting = 'finish';
 
@@ -71,8 +72,8 @@ for (const [button, role] of [['pinStart', 'start'], ['pinFinish', 'finish']]) {
 }
 canvas.onclick = event => {
   const rect = canvas.getBoundingClientRect();
-  pins[selecting] = [(event.offsetX * 600 / rect.width - 12) / scale,
-                     (468 - event.offsetY * 480 / rect.height) / scale];
+  pins[selecting] = [bounds[0][0] + (event.offsetX * 600 / rect.width - 12) / scale,
+                     bounds[0][1] + (468 - event.offsetY * 480 / rect.height) / scale];
   document.getElementById(selecting).value = 'Map pin';
   matches.hidden = true;
   reset();
@@ -127,7 +128,7 @@ form.onsubmit = async event => {
       if (!fix) throw Error('Waiting for a fresh comma GPS fix. Retry Calculate route or set a start pin.');
       const [lon, lat] = data.origin;
       start = [(fix.longitude - lon) * 111320 * Math.cos(lat * Math.PI / 180), (fix.latitude - lat) * 111320];
-      if (!start.every((v, i) => v >= bounds[0][i] && v <= bounds[1][i])) throw Error('Comma GPS is outside the Jacana map.');
+      if (!start.every((v, i) => v >= bounds[0][i] && v <= bounds[1][i])) throw Error('Comma GPS is outside the {{area}} map.');
       gpsStart = start;
     }
     const plan = calculate(start, destination);

@@ -65,6 +65,13 @@ class PlannerHandler(BaseHTTPRequestHandler):
         self.server.last_fix = event
       position = current_position(self.server.last_fix, monotonic_ns())
       return self.reply(200, json.dumps(position).encode(), 'application/json')
+    if resource in ('', '?area=pascoe'):
+      page = (DIRECTORY / 'index.html').read_text()
+      area, asset = ('Pascoe Vale', 'pascoe.js') if resource else ('Jacana', 'map.js')
+      page = page.replace('{{area}}', area).replace('{{map_file}}', asset)
+      return self.reply(200, page.encode(), 'text/html')
+    if resource == 'pascoe.js':
+      return self.reply(200, (DIRECTORY / resource).read_bytes(), 'application/javascript')
     if resource not in ASSETS:
       return self.reply(404, b'Planner link not found')
     filename, media_type = ASSETS[resource]
