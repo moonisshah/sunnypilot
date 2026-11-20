@@ -1,13 +1,15 @@
 """Serve the Jacana planner on a trusted local network."""
 import argparse
+import errno
 import hmac
 import json
 import secrets
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from ipaddress import IPv4Address
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from time import monotonic_ns
+from time import monotonic_ns, sleep
 
 DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(DIRECTORY.parents[1] / 'selfdrive/ui/mici/onroad'))
@@ -95,16 +97,60 @@ class PlannerHandler(BaseHTTPRequestHandler):
     self.reply(200, b'Route sent. Check the comma display.')
 
 
-if __name__ == '__main__':
-  parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument('device_ip', help='Comma local IP address to bind to')
-  args = parser.parse_args()
-  with HTTPServer((args.device_ip, 8765), PlannerHandler) as server:
+CONFIG = Path('/data/local-route-planner.json')
+
+
+def configure(address, path=CONFIG):
+  ip = IPv4Address(address)
+  if not ip.is_private or ip.is_unspecified or ip.is_loopback or ip.is_link_local:
+    raise ValueError('Use the local Wi-Fi address shown on the comma.')
+  token = json.loads(path.read_text())['token'] if path.exists() else secrets.token_urlsafe(24)
+  with NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as output:
+    temporary = Path(output.name)
+    try:
+      json.dump({'ip': str(ip), 'token': token}, output)
+      output.close()
+      temporary.replace(path)
+    finally:
+      temporary.unlink(missing_ok=True)
+  return token
+
+
+def serve(address, token, managed=False):
+  while True:
+    try:
+      server = HTTPServer((address, 8765), PlannerHandler)
+      break
+    except OSError as error:
+      if not managed or error.errno not in (errno.EADDRNOTAVAIL, errno.EADDRINUSE):
+        raise
+      sleep(5)
+  with server:
     sys.path.insert(0, str(DIRECTORY.parents[1]))
     from cereal import messaging
     gps = messaging.sub_sock('gpsLocationExternal', conflate=True)
     server.read_gps = lambda: messaging.recv_one_or_none(gps)
     server.last_fix = None
-    server.token = secrets.token_urlsafe(24)
-    print(f'Open http://{args.device_ip}:8765/{server.token}/ in Safari while parked.', flush=True)
+    server.token = token
+    if not managed:
+      print(f'Open http://{address}:8765/{token}/ in Safari while parked.', flush=True)
     server.serve_forever()
+
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument('device_ip', nargs='?', help='Comma local IP address to bind to')
+  mode = parser.add_mutually_exclusive_group()
+  mode.add_argument('--enable-autostart', action='store_true')
+  mode.add_argument('--managed', action='store_true')
+  args = parser.parse_args()
+  if args.managed:
+    config = json.loads(CONFIG.read_text())
+    serve(config['ip'], config['token'], managed=True)
+  elif not args.device_ip:
+    parser.error('Enter the local IP address of the comma.')
+  elif args.enable_autostart:
+    token = configure(args.device_ip)
+    print(f'After reboot, bookmark http://{args.device_ip}:8765/{token}/?area=pascoe in Safari.')
+  else:
+    serve(args.device_ip, secrets.token_urlsafe(24))
