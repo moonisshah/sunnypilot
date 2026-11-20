@@ -239,7 +239,12 @@ class AugmentedRoadView(CameraView):
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
     if alert_to_render is None:
       cue = self._route_display.current_text(ui_state.sm, ui_state.started_frame, time.monotonic())
-      if cue:
+      car_state = ui_state.sm['carState']
+      in_park = (ui_state.sm.all_checks(['carState']) and
+                 car_state.gearShifter == car.CarState.GearShifter.park and car_state.standstill)
+      if in_park:
+        self._draw_route_text(self._content_rect, self._route_display.parked_preview(), parked=True)
+      elif cue:
         self._draw_route_text(self._content_rect, cue)
     self._alert_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
