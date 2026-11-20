@@ -113,6 +113,7 @@ class NationalRoute:
   block_size = 64
 
   def __init__(self, route):
+    self.auto_reroute = route.get('autoReroute') is True
     self.destination = route['destination']
     if not isinstance(self.destination, str) or not 1 <= len(self.destination) <= 120 or not self.destination.isprintable():
       raise ValueError('Invalid destination')
@@ -159,7 +160,7 @@ class NationalRoute:
           best = offset
           along = self.lengths[i] + t * (self.lengths[i + 1] - self.lengths[i])
     if along is None:
-      return 'Outside planned route'
+      return 'Off route'
     last_lat, last_lon = self.points[-1]
     if self.lengths[-1] - along <= 10 and math.hypot((last_lat-lat)*111320, (last_lon-lon)*east) <= 12:
       return 'At destination'

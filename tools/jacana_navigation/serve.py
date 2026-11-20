@@ -5,14 +5,16 @@ import hmac
 import json
 import secrets
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from ipaddress import IPv4Address
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from time import monotonic_ns, sleep
+from time import monotonic, monotonic_ns, sleep
 
 DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(DIRECTORY.parents[1] / 'selfdrive/ui/mici/onroad'))
+from reroute import Rerouter
 from route_cue import DISPLAY_ACK, MAX_ROUTE_BYTES, ROUTE_FILE, RouteCue, parse_route, route_version
 
 
@@ -41,6 +43,40 @@ def current_position(event, now):
           and -90 <= fix.latitude <= 90 and -180 <= fix.longitude <= 180):
     return None
   return {'latitude': fix.latitude, 'longitude': fix.longitude}
+
+
+class PlannerServer(HTTPServer):
+  def poll_fix(self):
+    event = self.read_gps()
+    if event is not None:
+      self.last_fix = event
+    return current_position(self.last_fix, monotonic_ns())
+
+  def service_actions(self):
+    now = monotonic()
+    if now < self.next_check:
+      return
+    self.next_check = now + .5
+    try:
+      version = route_version(ROUTE_FILE)
+    except OSError:
+      version = None
+    if version != self.watched_version:
+      self.rerouter.reset()
+      self.watched_version = version
+      self.watched_route = RouteCue.load() if version else None
+    route = self.watched_route
+    if not getattr(route, 'auto_reroute', False):
+      return
+    fix = self.poll_fix()
+    position = (fix['latitude'], fix['longitude']) if fix else None
+    body = self.rerouter.tick(route, self.last_fix.logMonoTime if fix else None, position, now)
+    if body is not None:
+      try:
+        if route_version(ROUTE_FILE) == version:
+          save_route(body)
+      except OSError:
+        pass
 
 
 class PlannerHandler(BaseHTTPRequestHandler):
@@ -81,10 +117,7 @@ class PlannerHandler(BaseHTTPRequestHandler):
         return self.reply(500, b'Could not read route status')
       return self.reply(200, json.dumps(state).encode(), 'application/json')
     if resource == 'position':
-      event = self.server.read_gps()
-      if event is not None:
-        self.server.last_fix = event
-      position = current_position(self.server.last_fix, monotonic_ns())
+      position = self.server.poll_fix()
       return self.reply(200, json.dumps(position).encode(), 'application/json')
     areas = {'': ('Jacana', 'map.js'), '?area=pascoe': ('Pascoe Vale', 'pascoe.js'),
              '?area=corridor': ('Pascoe Vale–Jacana', 'corridor.js')}
@@ -155,13 +188,16 @@ def configure(address, path=CONFIG):
 def serve(address, token, managed=False):
   while True:
     try:
-      server = HTTPServer((address, 8765), PlannerHandler)
+      server = PlannerServer((address, 8765), PlannerHandler)
       break
     except OSError as error:
       if not managed or error.errno not in (errno.EADDRNOTAVAIL, errno.EADDRINUSE):
         raise
       sleep(5)
-  with server:
+  with server, ThreadPoolExecutor(max_workers=1) as pool:
+    server.next_check = 0.
+    server.watched_version = server.watched_route = None
+    server.rerouter = Rerouter(pool.submit)
     sys.path.insert(0, str(DIRECTORY.parents[1]))
     from cereal import messaging
     gps = messaging.sub_sock('gpsLocationExternal', conflate=True)

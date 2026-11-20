@@ -25,6 +25,8 @@ small { display:block; margin:1rem 0; }
 </section>
 <p id="status" role="status"></p>
 <details id="preview" hidden><summary>Preview directions</summary><ol id="directions"></ol></details>
+<label><input id="autoReroute" type="checkbox" style="width:auto"> Automatically reroute if I miss a turn</label>
+<small>When enabled, the comma sends its current position and route endpoint to OSRM after a confirmed deviation, even with Safari closed.</small>
 <button id="save" disabled>Send to Comma</button>
 <small>Search sends the entered text to Photon. Calculate sends your comma’s start and selected destination coordinates to the public OSRM driving-route service. Both need internet. The saved route is available on the comma offline.</small>
 <small>Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>.</small>
@@ -52,6 +54,7 @@ async function getJSON(url) {
   if (!response.ok) throw Error(response.status === 429 ? 'Service busy. Try again shortly.' : 'The online service could not complete this request.');
   return response.json();
 }
+byId('autoReroute').onchange = () => { if (result) result.autoReroute = byId('autoReroute').checked; };
 byId('query').oninput = clearSearch;
 places.onchange = reset;
 byId('searchForm').onsubmit = async event => {
@@ -92,6 +95,7 @@ byId('calculate').onclick = async () => {
     const data = await getJSON('https://router.project-osrm.org/route/v1/driving/' + endpoints + '?' + options);
     if (request !== revision) return;
     result = auRoute(data,choice.label);
+    result.autoReroute = byId('autoReroute').checked;
     for (const [,cue] of result.steps) {
       const item = document.createElement('li');
       item.textContent = cue;
