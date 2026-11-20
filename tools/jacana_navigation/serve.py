@@ -47,9 +47,11 @@ class PlannerHandler(BaseHTTPRequestHandler):
     _, token, resource = self.path.split('/', 2) if self.path.count('/') >= 2 else ('', '', '')
     return resource if hmac.compare_digest(token, self.server.token) else None
 
-  def reply(self, status, body, media_type='text/plain'):
+  def reply(self, status, body, media_type='text/plain', encoding=None):
     self.send_response(status)
     self.send_header('Content-Type', media_type + '; charset=utf-8')
+    if encoding:
+      self.send_header('Content-Encoding', encoding)
     self.send_header('Content-Length', str(len(body)))
     self.send_header('Cache-Control', 'no-store')
     self.send_header('Referrer-Policy', 'no-referrer')
@@ -80,11 +82,15 @@ class PlannerHandler(BaseHTTPRequestHandler):
         self.server.last_fix = event
       position = current_position(self.server.last_fix, monotonic_ns())
       return self.reply(200, json.dumps(position).encode(), 'application/json')
-    if resource in ('', '?area=pascoe'):
+    areas = {'': ('Jacana', 'map.js'), '?area=pascoe': ('Pascoe Vale', 'pascoe.js'),
+             '?area=corridor': ('Pascoe Vale–Jacana', 'corridor.js')}
+    if resource in areas:
       page = (DIRECTORY / 'index.html').read_text()
-      area, asset = ('Pascoe Vale', 'pascoe.js') if resource else ('Jacana', 'map.js')
+      area, asset = areas[resource]
       page = page.replace('{{area}}', area).replace('{{map_file}}', asset)
       return self.reply(200, page.encode(), 'text/html')
+    if resource == 'corridor.js':
+      return self.reply(200, (DIRECTORY / 'corridor.js.gz').read_bytes(), 'application/javascript', 'gzip')
     if resource == 'pascoe.js':
       return self.reply(200, (DIRECTORY / resource).read_bytes(), 'application/javascript')
     if resource not in ASSETS:
