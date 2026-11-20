@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jacana route planner</title>
+<style>
+body { margin: 3rem auto; padding: 0 1rem; max-width: 34rem; font: 18px/1.5 system-ui; color: #153d35; }
+input,button { font: inherit; padding: .5rem; }
+input { width: 95%; margin-bottom: 1rem; }
+button { cursor: pointer; }
+canvas { width: 100%; height: auto; background: #eff1ea; border-radius: 8px; }
+</style>
+<h1>Jacana route planner</h1>
+<form id="planner">
+<label for="start">Starting address</label><input id="start">
+<label for="finish">Destination address</label><input id="finish">
+<select id="matches" hidden aria-label="Matching addresses"></select>
+<button>Calculate route</button>
+</form>
+<p>Enter addresses or select a point on the map.</p>
+<button type="button" id="pinStart">Set start pin</button>
+<button type="button" id="pinFinish">Set destination pin</button>
+<canvas id="map" width="600" height="480" aria-label="Jacana local street map"></canvas>
+<p id="status" role="status"></p><ol id="turns"></ol>
+<button id="save" disabled>Send to Comma</button>
+<p><small>Street map and addresses © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>, ODbL. Routes cover the included Jacana street network.</small></p>
+<script src="map.js"></script><script src="route.js"></script>
+<script>
+const form = document.getElementById('planner');
+const save = document.getElementById('save');
+const statusLine = document.getElementById('status');
+const turnList = document.getElementById('turns');
+
+const normalize = text => text.trim().toLowerCase().replace(/\s+/g, ' ');
+const names = new Map(Object.keys(addresses).map(name => [normalize(name), name]));
+let result;
+let activeField;
+const matches = document.getElementById("matches");
+const canvas = document.getElementById('map');
+const ctx = canvas.getContext('2d');
+const scale = Math.min(576 / bounds[1][0], 456 / bounds[1][1]);
+const pixel = ([x,y]) => [12 + x*scale, 468 - y*scale];
+const pins = {};
+let selecting = 'finish';
+
+function drawMap(route = []) {
+  ctx.clearRect(0, 0, 600, 480);
+  function line(points, color, width) {
+    ctx.beginPath();
+    points.forEach((point, i) => i ? ctx.lineTo(...pixel(point)) : ctx.moveTo(...pixel(point)));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  }
+  for (const [,,ids] of roads) line(ids.map(id => nodes[id]), '#aab8ad', 2);
+  if (route.length) line(route, '#216a56', 5);
+  for (const [role, point] of Object.entries(pins)) {
+    ctx.beginPath();
+    ctx.arc(...pixel(point), 7, 0, 2 * Math.PI);
+    ctx.fillStyle = role === 'start' ? '#216a56' : '#a9512e';
+    ctx.fill();
+  }
+}
+for (const [button, role] of [['pinStart', 'start'], ['pinFinish', 'finish']]) {
+  document.getElementById(button).onclick = () => {
+    selecting = role;
+    statusLine.textContent = 'Tap the map to set the ' + (role === 'start' ? 'start.' : 'destination.');
+  };
+}
+canvas.onclick = event => {
+  const rect = canvas.getBoundingClientRect();
+  pins[selecting] = [(event.offsetX * 600 / rect.width - 12) / scale,
+                     (468 - event.offsetY * 480 / rect.height) / scale];
+  document.getElementById(selecting).value = 'Map pin';
+  matches.hidden = true;
+  reset();
+  drawMap();
+};
+drawMap();
+
+function reset() {
+  result = null;
+  save.disabled = true;
+  turnList.replaceChildren();
+  statusLine.textContent = '';
+}
+form.oninput = event => {
+  reset();
+  if (event.target === matches) return;
+  activeField = event.target;
+  delete pins[activeField.id];
+  drawMap();
+  matches.replaceChildren(new Option("Choose an address", ""));
+  const query = normalize(event.target.value);
+  for (const [key, name] of names) {
+    if (key.includes(query)) matches.append(new Option(name, name));
+    if (matches.children.length >= 20) break;
+  }
+  matches.hidden = !query || matches.children.length < 2;
+};
+matches.onchange = () => {
+  if (activeField && matches.value) activeField.value = matches.value;
+  matches.hidden = true;
+  reset();
+};
+form.onsubmit = event => {
+  event.preventDefault();
+  reset();
+  const selected = ['start', 'finish'].map(id => pins[id] || addresses[names.get(normalize(document.getElementById(id).value))]);
+  if (selected.includes(undefined)) {statusLine.textContent = 'Choose a listed address or a map pin for both ends.'; return;}
+  try {
+    const plan = calculate(...selected);
+    if (plan.distance < 1) throw Error('Choose two different locations.');
+    result = {format:'local-route-2', origin:data.origin, points:plan.route, turns:plan.turns};
+    for (const [metres, cue] of plan.turns) {
+      const item = document.createElement('li');
+      item.textContent = Math.round(metres) + ' m from start · ' + cue;
+      turnList.append(item);
+    }
+    statusLine.textContent = (plan.distance / 1000).toFixed(2) + ' km';
+    drawMap(plan.route);
+    save.disabled = false;
+  } catch (error) {statusLine.textContent = error.message;}
+};
+save.onclick = async () => {
+  if (!result) return;
+  save.disabled = true;
+  try {
+    const response = await fetch('route', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(result)
+    });
+    statusLine.textContent = await response.text();
+  } catch {
+    statusLine.textContent = 'Could not connect to the comma. Check the local connection and retry.';
+  } finally {
+    save.disabled = !result;
+  }
+};
+</script>
+</html>
