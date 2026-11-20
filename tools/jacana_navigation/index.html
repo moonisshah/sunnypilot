@@ -12,7 +12,7 @@ canvas { width: 100%; height: auto; background: #eff1ea; border-radius: 8px; }
 </style>
 <h1>Jacana route planner</h1>
 <form id="planner">
-<label for="start">Starting address</label><input id="start">
+<label for="start">Starting address (optional)</label><input id="start" placeholder="Use comma GPS">
 <label for="finish">Destination address</label><input id="finish">
 <select id="matches" hidden aria-label="Matching addresses"></select>
 <button>Calculate route</button>
@@ -34,6 +34,8 @@ const turnList = document.getElementById('turns');
 const normalize = text => text.trim().toLowerCase().replace(/\s+/g, ' ');
 const names = new Map(Object.keys(addresses).map(name => [normalize(name), name]));
 let result;
+let revision = 0;
+let gpsStart;
 let activeField;
 const matches = document.getElementById("matches");
 const canvas = document.getElementById('map');
@@ -54,7 +56,7 @@ function drawMap(route = []) {
   }
   for (const [,,ids] of roads) line(ids.map(id => nodes[id]), '#aab8ad', 2);
   if (route.length) line(route, '#216a56', 5);
-  for (const [role, point] of Object.entries(pins)) {
+  for (const [role, point] of Object.entries(gpsStart ? {...pins, start: gpsStart} : pins)) {
     ctx.beginPath();
     ctx.arc(...pixel(point), 7, 0, 2 * Math.PI);
     ctx.fillStyle = role === 'start' ? '#216a56' : '#a9512e';
@@ -79,6 +81,9 @@ canvas.onclick = event => {
 drawMap();
 
 function reset() {
+  revision++;
+  gpsStart = null;
+  drawMap();
   result = null;
   save.disabled = true;
   turnList.replaceChildren();
@@ -103,13 +108,29 @@ matches.onchange = () => {
   matches.hidden = true;
   reset();
 };
-form.onsubmit = event => {
+form.onsubmit = async event => {
   event.preventDefault();
   reset();
-  const selected = ['start', 'finish'].map(id => pins[id] || addresses[names.get(normalize(document.getElementById(id).value))]);
-  if (selected.includes(undefined)) {statusLine.textContent = 'Choose a listed address or a map pin for both ends.'; return;}
+  const request = revision;
+  const locationFor = id => pins[id] || addresses[names.get(normalize(document.getElementById(id).value))];
+  const destination = locationFor('finish');
   try {
-    const plan = calculate(...selected);
+    if (!destination) throw Error('Choose a destination address or set a destination pin.');
+    let start = locationFor('start');
+    if (!start && document.getElementById('start').value.trim()) throw Error('Choose a listed starting address or clear it to use GPS.');
+    if (!start) {
+      statusLine.textContent = 'Getting the comma’s current position…';
+      const response = await fetch('position', {cache: 'no-store'});
+      if (!response.ok) throw Error('Could not read comma GPS. Retry or set a start pin.');
+      const fix = await response.json();
+      if (revision !== request) return;
+      if (!fix) throw Error('Waiting for a fresh comma GPS fix. Retry Calculate route or set a start pin.');
+      const [lon, lat] = data.origin;
+      start = [(fix.longitude - lon) * 111320 * Math.cos(lat * Math.PI / 180), (fix.latitude - lat) * 111320];
+      if (!start.every((v, i) => v >= bounds[0][i] && v <= bounds[1][i])) throw Error('Comma GPS is outside the Jacana map.');
+      gpsStart = start;
+    }
+    const plan = calculate(start, destination);
     if (plan.distance < 1) throw Error('Choose two different locations.');
     result = {format:'local-route-2', origin:data.origin, points:plan.route, turns:plan.turns};
     for (const [metres, cue] of plan.turns) {
@@ -120,7 +141,7 @@ form.onsubmit = event => {
     statusLine.textContent = (plan.distance / 1000).toFixed(2) + ' km';
     drawMap(plan.route);
     save.disabled = false;
-  } catch (error) {statusLine.textContent = error.message;}
+  } catch (error) {if (revision === request) statusLine.textContent = error.message;}
 };
 save.onclick = async () => {
   if (!result) return;

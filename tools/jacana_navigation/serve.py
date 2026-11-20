@@ -7,6 +7,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from time import monotonic_ns
 
 DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(DIRECTORY.parents[1] / 'selfdrive/ui/mici/onroad'))
@@ -29,6 +30,16 @@ def save_route(body, path=ROUTE_FILE):
       temporary.unlink(missing_ok=True)
 
 
+def current_position(event, now):
+  if event is None or not event.valid or not 0 <= now - event.logMonoTime <= 2_000_000_000:
+    return None
+  fix = event.gpsLocationExternal
+  if not (fix.hasFix and 0 < fix.horizontalAccuracy <= 15
+          and -90 <= fix.latitude <= 90 and -180 <= fix.longitude <= 180):
+    return None
+  return {'latitude': fix.latitude, 'longitude': fix.longitude}
+
+
 class PlannerHandler(BaseHTTPRequestHandler):
   def authorized_path(self):
     _, token, resource = self.path.split('/', 2) if self.path.count('/') >= 2 else ('', '', '')
@@ -48,6 +59,12 @@ class PlannerHandler(BaseHTTPRequestHandler):
 
   def do_GET(self):
     resource = self.authorized_path()
+    if resource == 'position':
+      event = self.server.read_gps()
+      if event is not None:
+        self.server.last_fix = event
+      position = current_position(self.server.last_fix, monotonic_ns())
+      return self.reply(200, json.dumps(position).encode(), 'application/json')
     if resource not in ASSETS:
       return self.reply(404, b'Planner link not found')
     filename, media_type = ASSETS[resource]
@@ -76,6 +93,11 @@ if __name__ == '__main__':
   parser.add_argument('device_ip', help='Comma local IP address to bind to')
   args = parser.parse_args()
   with HTTPServer((args.device_ip, 8765), PlannerHandler) as server:
+    sys.path.insert(0, str(DIRECTORY.parents[1]))
+    from cereal import messaging
+    gps = messaging.sub_sock('gpsLocationExternal', conflate=True)
+    server.read_gps = lambda: messaging.recv_one_or_none(gps)
+    server.last_fix = None
     server.token = secrets.token_urlsafe(24)
     print(f'Open http://{args.device_ip}:8765/{server.token}/ in Safari while parked.', flush=True)
     server.serve_forever()
