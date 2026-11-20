@@ -1,6 +1,7 @@
 """Read-only route display. Coordinates are local metres east/north."""
 import json
 import math
+from time import monotonic
 from bisect import bisect_left
 from itertools import accumulate
 from pathlib import Path
@@ -70,18 +71,40 @@ class RouteCue:
 
 
 class RouteDisplay:
-  def __init__(self):
-    self.route = RouteCue.load()
+  def __init__(self, path=ROUTE_FILE):
+    self.path = path
+    self.route = None
+    self.frame = None
+    self.cue = ''
+    self._file_version = None
+    self._next_check = 0.0
+
+  def _refresh_route(self, now):
+    if now < self._next_check:
+      return
+    self._next_check = now + 1.0
+    try:
+      stat = self.path.stat()
+      version = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+      version = None
+    if version == self._file_version:
+      return
+
+    self.route = RouteCue.load(self.path) if version is not None else None
+    self._file_version = version
     self.frame = None
     self.cue = ''
 
   def parked_preview(self):
+    self._refresh_route(monotonic())
     if self.route is None:
       return 'Demo   200 m   Turn left onto Example Street'
     distance, cue = self.route.turns[0]
     return f'Preview  {round(distance)} m  {cue}'
 
   def current_text(self, sm, started_frame, now):
+    self._refresh_route(now)
     if self.route is None:
       return ''
     service = 'gpsLocationExternal'
