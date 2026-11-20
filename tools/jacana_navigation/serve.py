@@ -13,15 +13,16 @@ from time import monotonic_ns, sleep
 
 DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(DIRECTORY.parents[1] / 'selfdrive/ui/mici/onroad'))
-from route_cue import DISPLAY_ACK, ROUTE_FILE, RouteCue, route_version
+from route_cue import DISPLAY_ACK, MAX_ROUTE_BYTES, ROUTE_FILE, RouteCue, parse_route, route_version
 
-MAX_ROUTE_BYTES = 256000
-ASSETS = {'': ('index.html', 'text/html'), 'map.js': ('map.js', 'application/javascript'),
+
+ASSETS = {'au_route.js': ('au_route.js', 'application/javascript'), '?area=au': ('australia.html', 'text/html'), 'trip.js': ('trip.js', 'application/javascript'),
+          '': ('index.html', 'text/html'), 'map.js': ('map.js', 'application/javascript'),
           'route.js': ('route.js', 'application/javascript')}
 
 
 def save_route(body, path=ROUTE_FILE):
-  RouteCue(json.loads(body))
+  parse_route(json.loads(body))
   with NamedTemporaryFile(dir=path.parent, delete=False) as output:
     temporary = Path(output.name)
     try:
@@ -66,11 +67,14 @@ class PlannerHandler(BaseHTTPRequestHandler):
     if resource == 'status':
       try:
         version = route_version(ROUTE_FILE)
-        route = RouteCue.load()
-        if route is None:
-          return self.reply(500, b'Could not read saved route')
+        if getattr(self.server, 'status_version', None) != version:
+          route = RouteCue.load()
+          if route is None:
+            return self.reply(500, b'Could not read saved route')
+          self.server.status_destination = route.destination
+          self.server.status_version = version
         loaded = DISPLAY_ACK.exists() and DISPLAY_ACK.read_text() == version
-        state = {'version': version, 'destination': route.destination, 'loaded': loaded}
+        state = {'version': version, 'destination': self.server.status_destination, 'loaded': loaded}
       except FileNotFoundError:
         state = None
       except OSError:
@@ -122,7 +126,7 @@ class PlannerHandler(BaseHTTPRequestHandler):
         return self.reply(413, b'Route exceeds the size limit or is empty')
       self.connection.settimeout(5)
       save_route(self.rfile.read(length))
-    except (ValueError, KeyError, TypeError, AttributeError, OverflowError, RecursionError):
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError, OverflowError, RecursionError):
       return self.reply(400, b'Invalid route')
     except OSError:
       return self.reply(500, b'Could not save the route')

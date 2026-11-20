@@ -10,6 +10,7 @@ ROUTE_FILE = Path('/data/media/0/santa-fe-route.json')
 
 
 
+MAX_ROUTE_BYTES = 2_000_000
 DISPLAY_ACK = Path('/dev/shm/santa-fe-route-loaded')
 
 
@@ -53,9 +54,9 @@ class RouteCue:
   def load(cls, path=ROUTE_FILE):
     try:
       with path.open('rb') as source:
-        data = source.read(256001)
-      if len(data) <= 256000:
-        return cls(json.loads(data))
+        data = source.read(MAX_ROUTE_BYTES + 1)
+      if len(data) <= MAX_ROUTE_BYTES:
+        return parse_route(json.loads(data))
     except (OSError, ValueError, KeyError, IndexError, AttributeError, TypeError, OverflowError, RecursionError):
       pass
     return None
@@ -79,6 +80,98 @@ class RouteCue:
     index = min(bisect_left(self.distances, along), len(self.turns) - 1)
     distance, cue = self.turns[index]
     return f'{round(max(0, distance - along))} m  {cue}'
+
+
+def decode_shape(shape):
+  if not isinstance(shape, str) or not 4 <= len(shape) <= MAX_ROUTE_BYTES:
+    raise ValueError('Invalid route shape')
+  coords = [0, 0]
+  values = 0
+  shift = value = 0
+  for char in shape:
+    part = ord(char) - 63
+    if not 0 <= part <= 63 or shift > 30:
+      raise ValueError('Invalid polyline')
+    value |= (part & 31) << shift
+    if part >= 32:
+      shift += 5
+      continue
+    coords[values % 2] += ~(value >> 1) if value & 1 else value >> 1
+    values += 1
+    value = shift = 0
+    if values % 2 == 0:
+      lat, lon = (v / 1e6 for v in coords)
+      if not (-56 <= lat <= -8 and 95 <= lon <= 169) or values > 300000:
+        raise ValueError('Route exceeds supported Australian coverage')
+      yield lat, lon
+  if shift or values % 2 or values < 4:
+    raise ValueError('Incomplete route shape')
+
+
+class NationalRoute:
+  """Match only nearby blocks of a geographic polyline for each GPS update."""
+  block_size = 64
+
+  def __init__(self, route):
+    self.destination = route['destination']
+    if not isinstance(self.destination, str) or not 1 <= len(self.destination) <= 120 or not self.destination.isprintable():
+      raise ValueError('Invalid destination')
+    self.points = list(decode_shape(route['shape']))
+    self.lengths = [0.]
+    self.blocks = []
+    for start in range(0, len(self.points) - 1, self.block_size):
+      points = self.points[start:start + self.block_size + 1]
+      lats, lons = zip(*points)
+      self.blocks.append((start, min(lats), max(lats), min(lons), max(lons)))
+      for (lat, lon), (end_lat, end_lon) in zip(points, points[1:]):
+        east = (end_lon - lon) * math.cos(math.radians((end_lat + lat) / 2))
+        self.lengths.append(self.lengths[-1] + 111320 * math.hypot(end_lat - lat, east))
+    steps = route['steps']
+    if not isinstance(steps, list) or not 1 <= len(steps) <= 10000:
+      raise ValueError('Invalid maneuvers')
+    self.turns = []
+    previous = -1
+    for index, instruction in steps:
+      if type(index) is not int or not previous <= index < len(self.points) or index < 0:
+        raise ValueError('Invalid maneuver position')
+      if not isinstance(instruction, str) or not 1 <= len(instruction) <= 400 or not instruction.isprintable():
+        raise ValueError('Invalid instruction')
+      self.turns.append((self.lengths[index], instruction))
+      previous = index
+    if previous != len(self.points) - 1:
+      raise ValueError('Missing arrival')
+    self.distances = [d for d, _ in self.turns]
+
+  def cue_at(self, lat, lon):
+    east = 111320 * math.cos(math.radians(lat))
+    best, along = 30.0, None
+    for start, south, north, west, right in self.blocks:
+      if not (south - .0003 <= lat <= north + .0003 and west - .0006 <= lon <= right + .0006):
+        continue
+      for i in range(start, min(start + self.block_size, len(self.points) - 1)):
+        a, b = self.points[i:i + 2]
+        x, y = (lon - a[1]) * east, (lat - a[0]) * 111320
+        dx, dy = (b[1] - a[1]) * east, (b[0] - a[0]) * 111320
+        squared = dx * dx + dy * dy
+        t = max(0., min(1., (x * dx + y * dy) / squared)) if squared else 0.
+        offset = math.hypot(x - t * dx, y - t * dy)
+        if offset <= best:
+          best = offset
+          along = self.lengths[i] + t * (self.lengths[i + 1] - self.lengths[i])
+    if along is None:
+      return 'Outside planned route'
+    last_lat, last_lon = self.points[-1]
+    if self.lengths[-1] - along <= 10 and math.hypot((last_lat-lat)*111320, (last_lon-lon)*east) <= 12:
+      return 'At destination'
+    idx = min(bisect_left(self.distances, along), len(self.turns) - 1)
+    distance, instruction = self.turns[idx]
+    remaining = max(0., distance - along)
+    label = f'{remaining / 1000:.1f} km' if remaining >= 1000 else f'{round(remaining)} m'
+    return f'{label}  {instruction}'
+
+
+def parse_route(route):
+  return NationalRoute(route) if route.get('format') == 'au-route-1' else RouteCue(route)
 
 
 class RouteDisplay:

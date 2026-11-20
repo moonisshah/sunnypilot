@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en-AU">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Australia-wide route planner</title>
+<style>
+body { max-width:36rem; margin:2rem auto; padding:0 1rem; font:18px/1.45 system-ui; color:#153d35; }
+input,select,button { font:inherit; padding:.55rem; max-width:100%; box-sizing:border-box; }
+input,select { width:100%; margin:.4rem 0 .7rem; }
+button { margin:.3rem 0; }
+small { display:block; margin:1rem 0; }
+</style>
+<h1>Australia-wide route planner</h1>
+<nav><a href="?area=corridor">Offline local maps</a></nav>
+<p id="activeRoute" role="status"></p><button id="cancelRoute" hidden>Cancel active route</button>
+<form id="searchForm">
+<label for="query">Destination address or place</label>
+<input id="query" required maxlength="180" placeholder="Include the suburb and state">
+<button>Search Australia</button>
+</form>
+<section id="choices" hidden>
+<label for="places">Choose your destination</label><select id="places"></select>
+<button id="calculate">Calculate from comma GPS</button>
+</section>
+<p id="status" role="status"></p>
+<details id="preview" hidden><summary>Preview directions</summary><ol id="directions"></ol></details>
+<button id="save" disabled>Send to Comma</button>
+<small>Search sends the entered text to Photon. Calculate sends your comma’s start and selected destination coordinates to the public OSRM driving-route service. Both need internet. The saved route is available on the comma offline.</small>
+<small>Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>.</small>
+<script src="au_route.js"></script>
+<script>
+const byId = id => document.getElementById(id);
+const statusLine = byId('status'), save = byId('save'), places = byId('places');
+let result, matches = [], revision = 0;
+function reset() {
+  revision++;
+  result = null;
+  save.disabled = true;
+  byId('preview').hidden = true;
+  byId('directions').replaceChildren();
+  statusLine.textContent = '';
+}
+function clearSearch() {
+  reset();
+  matches = [];
+  places.replaceChildren();
+  byId('choices').hidden = true;
+}
+async function getJSON(url) {
+  const response = await fetch(url, {signal:AbortSignal.timeout(45000), referrerPolicy:'no-referrer', credentials:'omit'});
+  if (!response.ok) throw Error(response.status === 429 ? 'Service busy. Try again shortly.' : 'The online service could not complete this request.');
+  return response.json();
+}
+byId('query').oninput = clearSearch;
+places.onchange = reset;
+byId('searchForm').onsubmit = async event => {
+  event.preventDefault();
+  clearSearch();
+  const request = revision;
+  const params = new URLSearchParams({q:byId('query').value.trim(),countrycode:'au',limit:'8',lang:'en'});
+  statusLine.textContent = 'Searching Australian addresses…';
+  try {
+    const data = await getJSON('https://photon.komoot.io/api/?' + params);
+    if (request !== revision) return;
+    for (const feature of data.features) {
+      const p = feature.properties, coords = feature.geometry.coordinates;
+      if (p.countrycode?.toUpperCase() !== 'AU' || feature.geometry.type !== 'Point' || !coords.every(Number.isFinite)) continue;
+      const street = [p.housenumber,p.street].filter(Boolean).join(' ');
+      const label = [...new Set([p.name,street,p.locality,p.city,p.state,p.postcode].filter(Boolean))].join(', ');
+      if (!label) continue;
+      places.add(new Option(label,String(matches.length)));
+      matches.push({label,coords});
+    }
+    byId('choices').hidden = matches.length === 0;
+    statusLine.textContent = matches.length ? 'Check the address and state before calculating.' : 'No match. Try the street, suburb and state.';
+  } catch (error) { if (request === revision) statusLine.textContent = 'Address search failed. ' + error.message; }
+};
+byId('calculate').onclick = async () => {
+  reset();
+  const request = revision, choice = matches[places.selectedIndex];
+  if (!choice) return;
+  statusLine.textContent = 'Reading comma GPS…';
+  try {
+    const fix = await getJSON('position');
+    if (request !== revision) return;
+    if (!fix) throw Error('Waiting for a fresh GPS fix. Try Calculate again.');
+    const [lon,lat] = choice.coords;
+    const endpoints = [fix.longitude,fix.latitude].join(',') + ';' + [lon,lat].join(',');
+    const options = new URLSearchParams({steps:'true',geometries:'geojson',overview:'false',radiuses:'500;500'});
+    statusLine.textContent = 'Calculating driving directions…';
+    const data = await getJSON('https://router.project-osrm.org/route/v1/driving/' + endpoints + '?' + options);
+    if (request !== revision) return;
+    result = auRoute(data,choice.label);
+    for (const [,cue] of result.steps) {
+      const item = document.createElement('li');
+      item.textContent = cue;
+      byId('directions').append(item);
+    }
+    const km = data.routes[0].distance / 1000;
+    statusLine.textContent = km.toFixed(1) + ' km to ' + choice.label;
+    byId('preview').hidden = false;
+    save.disabled = false;
+  } catch (error) { if (request === revision) statusLine.textContent = 'Route unavailable. ' + error.message; }
+};
+</script><script src="trip.js"></script>
+</html>
