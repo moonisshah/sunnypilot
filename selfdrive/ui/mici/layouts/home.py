@@ -10,6 +10,7 @@ from openpilot.system.ui.widgets.icon_widget import IconWidget
 from openpilot.system.ui.widgets.label import UnifiedLabel, gui_label
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.selfdrive.ui.mici.onroad.route_cue import RouteDisplay
 from openpilot.system.version import RELEASE_BRANCHES
 
 HEAD_BUTTON_FONT_SIZE = 40
@@ -137,6 +138,8 @@ class MiciHomeLayout(Widget):
     self._is_pressed_prev = False
 
     self._version_text = self._get_version_text()
+    self._route_preview = UnifiedLabel(RouteDisplay().parked_preview(), font_size=25,
+                                       font_weight=FontWeight.ROMAN, wrap_text=False)
 
     self._experimental_icon = IconWidget("icons_mici/experimental_mode.png", (48, 48))
     self._egpu_icon = IconWidget("icons_mici/egpu.png", (50, 37))
@@ -245,6 +248,11 @@ class MiciHomeLayout(Widget):
         self._version_commit_label.set_text(self._version_text[2])
         self._version_commit_label.set_position(version_pos.x, version_pos.y + self._date_label.font_size + 7)
         self._version_commit_label.render()
+
+    if not ui_state.started and not ui_state.ignition:
+      self._route_preview.set_max_width(self.rect.width - 2 * HOME_PADDING)
+      self._route_preview.set_position(self.rect.x + HOME_PADDING, self.rect.y + self.rect.height - 90)
+      self._route_preview.render()
 
     # ***** Center-aligned bottom section icons *****
     self._experimental_icon.set_visible(ui_state.experimental_mode)
