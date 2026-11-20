@@ -13,7 +13,7 @@ from time import monotonic_ns, sleep
 
 DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(DIRECTORY.parents[1] / 'selfdrive/ui/mici/onroad'))
-from route_cue import ROUTE_FILE, RouteCue
+from route_cue import DISPLAY_ACK, ROUTE_FILE, RouteCue, route_version
 
 MAX_ROUTE_BYTES = 256000
 ASSETS = {'': ('index.html', 'text/html'), 'map.js': ('map.js', 'application/javascript'),
@@ -61,6 +61,19 @@ class PlannerHandler(BaseHTTPRequestHandler):
 
   def do_GET(self):
     resource = self.authorized_path()
+    if resource == 'status':
+      try:
+        version = route_version(ROUTE_FILE)
+        route = RouteCue.load()
+        if route is None:
+          return self.reply(500, b'Could not read saved route')
+        loaded = DISPLAY_ACK.exists() and DISPLAY_ACK.read_text() == version
+        state = {'version': version, 'destination': route.destination, 'loaded': loaded}
+      except FileNotFoundError:
+        state = None
+      except OSError:
+        return self.reply(500, b'Could not read route status')
+      return self.reply(200, json.dumps(state).encode(), 'application/json')
     if resource == 'position':
       event = self.server.read_gps()
       if event is not None:
@@ -78,6 +91,19 @@ class PlannerHandler(BaseHTTPRequestHandler):
       return self.reply(404, b'Planner link not found')
     filename, media_type = ASSETS[resource]
     self.reply(200, (DIRECTORY / filename).read_bytes(), media_type)
+
+  def do_DELETE(self):
+    if self.authorized_path() != 'route':
+      return self.reply(404, b'Planner link not found')
+    try:
+      if self.headers.get('If-Match') != route_version(ROUTE_FILE):
+        return self.reply(409, b'The route has changed. Check the current destination.')
+      ROUTE_FILE.unlink()
+    except FileNotFoundError:
+      pass
+    except OSError:
+      return self.reply(500, b'Could not clear route')
+    self.reply(200, b'Route cleared.')
 
   def do_POST(self):
     if self.authorized_path() != 'route':

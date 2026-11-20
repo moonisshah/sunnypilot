@@ -10,6 +10,14 @@ ROUTE_FILE = Path('/data/media/0/santa-fe-route.json')
 
 
 
+DISPLAY_ACK = Path('/dev/shm/santa-fe-route-loaded')
+
+
+def route_version(path):
+  stat = path.stat()
+  return f'{stat.st_ino}-{stat.st_mtime_ns}-{stat.st_size}'
+
+
 def finite_pair(p):
   return isinstance(p, list) and len(p) == 2 and all(type(v) in (float, int) and math.isfinite(v) and abs(v) < 12000 for v in p)
 
@@ -18,6 +26,9 @@ class RouteCue:
   def __init__(self, route):
     if route.get('format') != 'local-route-2':
       raise ValueError('Unsupported route format')
+    self.destination = route.get('destination', 'Saved route')
+    if not isinstance(self.destination, str) or not self.destination.isprintable() or len(self.destination) > 120:
+      raise ValueError('Invalid destination')
     origin = route['origin']
     if not finite_pair(origin) or abs(origin[0]) > 180 or abs(origin[1]) >= 90:
       raise ValueError('Invalid route origin')
@@ -84,8 +95,7 @@ class RouteDisplay:
       return
     self._next_check = now + 1.0
     try:
-      stat = self.path.stat()
-      version = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+      version = route_version(self.path)
     except OSError:
       version = None
     if version == self._file_version:
@@ -93,15 +103,19 @@ class RouteDisplay:
 
     self.route = RouteCue.load(self.path) if version is not None else None
     self._file_version = version
+    if self.path == ROUTE_FILE and self.route is not None:
+      try:
+        DISPLAY_ACK.write_text(version)
+      except OSError:
+        pass
     self.frame = None
     self.cue = ''
 
   def parked_preview(self):
     self._refresh_route(monotonic())
     if self.route is None:
-      return 'Demo   200 m   Turn left onto Example Street'
-    distance, cue = self.route.turns[0]
-    return f'Preview  {round(distance)} m  {cue}'
+      return ''
+    return f'To {self.route.destination}'
 
   def current_text(self, sm, started_frame, now):
     self._refresh_route(now)
